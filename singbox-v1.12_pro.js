@@ -1,16 +1,25 @@
 /**
- * Sub-Store 远程脚本（v1.4_pro, IIFE）
- * - 注入：⚙️ 手动切换、🎚️ 自动选择、🇭🇰/🇯🇵/🇸🇬/🇺🇸/🇹🇼
- * - 业务分组“瘦身 + 定向地区白名单”
- * - 强力兜底：自动创建缺失的基础/地区分组；禁止空 outbounds；自检修复
+ * Sub-Store 远程脚本（v1.5_pro, IIFE）
+ * 功能：
+ *  1) 从 合集(coll)/订阅(names) 产出 sing-box 节点（internal 数组）
+ *  2) 注入：⚙️ 手动切换、🎚️ 自动选择、地区分组（🇭🇰/🇯🇵/🇸🇬/🇺🇸/🇹🇼）
+ *  3) 业务分组“瘦身 + 定向地区白名单”
+ *  4) 强力兜底与自检：禁止空 outbounds；自动补齐基础分组
+ *  5) 【v1.5 修复】强制所有“地区分组”为 selector（避免 Must be a Selector）
+ *
+ * 用法：
+ *  - Sub-Store「脚本操作 → 远程连接」填本文件 raw 链接（末尾加 ?v=xxx 规避缓存）
+ *  - 「文件」里选择规则模板：singbox_for_wrt_template_plus.json / pro.json
+ *  - 参数其一：coll=你的合集名  或  names=订阅1,订阅2（英文逗号）
+ *  - 若不传参，可直接在脚本顶部写死 COLL/NAMES（合集优先）
  */
 
 (function(){
-  /* ==== 可选兜底（不在 UI 传参时才用到；合集优先） ==== */
+  /* ==== 可选兜底（不在 UI 里传参时才用；合集优先） ==== */
   var COLL  = '';              // 例：'MyCollection'
   var NAMES = [];              // 例：['1233345','mitce']
 
-  /* ==== 地区匹配（按你的节点命名调整关键字） ==== */
+  /* ==== 地区匹配（按你的节点命名调整关键字/正则） ==== */
   var regionMap = {
     "🇭🇰 香港节点": /香港|HK|Hong\s*Kong/i,
     "🇯🇵 日本节点": /日本|JP|Japan/i,
@@ -19,13 +28,15 @@
     "🇹🇼 台湾节点": /台湾|台灣|TW|Taiwan/i
   };
 
-  /* ==== 业务分组清单与地区白名单策略 ==== */
+  /* ==== 需要“瘦身/定向”的业务分组清单 ==== */
   var bizGroups = new Set([
     "🚅 国内流量","📺 哔哩哔哩","🤖 海外AI服务","🎥 海外流媒体",
     "🎵 TikTok","📟 Telegram","🗃️ PayPal","📽️ 黑猫emby",
     "📹 YouTube","🔍 Google","🐙 GitHub","🪟 Microsoft","☁️ OneDrive",
     "💬 Discord","📘 Meta"," Apple","🏁 Speedtest"
   ]);
+
+  /* ==== 业务分组 → 地区白名单策略（只保留这些地区选择器） ==== */
   var bizRegionPolicy = {
     "🚅 国内流量": ["🇭🇰 香港节点","🇹🇼 台湾节点","🇯🇵 日本节点"],
     "📺 哔哩哔哩": ["🇭🇰 香港节点","🇹🇼 台湾节点"],
@@ -46,6 +57,7 @@
     "🏁 Speedtest": ["🇭🇰 香港节点","🇯🇵 日本节点","🇸🇬 新加坡节点","🇺🇸 美国节点","🇹🇼 台湾节点"]
   };
 
+  /* ==== 会把“全部节点展开”的聚合选择器（需从业务分组移除） ==== */
   var antiFlatten = new Set(["⚙️ 手动切换","🎚️ 自动选择","🚀 节点选择"]);
 
   /* ==== 工具 ==== */
@@ -53,14 +65,6 @@
   function ensureList(v){ return Array.isArray(v) ? v : []; }
   function mergeUnique(a,b){ var s=new Set([].concat(a||[], b||[])); return Array.from(s); }
   function byTag(tpl, tag){ return tpl.outbounds.find(function(o){ return o && o.tag===tag; }); }
-  function mustHaveOutbound(tpl, ob){
-    // 确保对象有 tag/type；selector/urltest 必须有非空 outbounds
-    if (!ob || !ob.tag) return false;
-    if ((ob.type==='selector' || ob.type==='urltest')) {
-      return Array.isArray(ob.outbounds) && ob.outbounds.length>0 && ob.outbounds.every(function(x){return typeof x==='string' && x;});
-    }
-    return true;
-  }
 
   /* ==== 1) 读取模板 ==== */
   var rawText = (typeof $content==='string' && $content.trim()) ? $content : ($files && $files[0]) ? $files[0] : '';
@@ -76,11 +80,23 @@
   ensureOutboundExists("🔄 直连入口", function(){ return { type:"direct", tag:"🔄 直连入口" }; });
   ensureOutboundExists("⚙️ 手动切换", function(){ return { type:"selector", tag:"⚙️ 手动切换", outbounds:[] }; });
   ensureOutboundExists("🎚️ 自动选择", function(){ return { type:"urltest", tag:"🎚️ 自动选择", url:"https://cp.cloudflare.com", interval:"300s", outbounds:[] }; });
-  // 若没有默认节点，创建一个默认 selector，以手动/自动作候选
   ensureOutboundExists("🐋 默认节点", function(){ return { type:"selector", tag:"🐋 默认节点", outbounds:["⚙️ 手动切换","🎚️ 自动选择","🔄 直连入口"] }; });
-  // 确保地区 selector 存在（先是空，稍后填充）
+  // 确保地区分组对象存在（初始为空，后续填充）
   Object.keys(regionMap).forEach(function(tag){
     ensureOutboundExists(tag, function(){ return { type:"selector", tag:tag, outbounds:[] }; });
+  });
+
+  /* ==== 【v1.5 新增】将所有地区分组强制为 selector（避免 urltest 导致 Must be a Selector） ==== */
+  Object.keys(regionMap).forEach(function(tag){
+    var ob = byTag(tpl, tag);
+    if (!ob) return;
+    if (ob.type !== 'selector') {
+      ob.type = 'selector';
+      // 清理 urltest 专用字段
+      if ('url' in ob) delete ob.url;
+      if ('interval' in ob) delete ob.interval;
+      ob.outbounds = ensureList(ob.outbounds);
+    }
   });
 
   /* ==== 3) 解析参数（UI 优先，其次兜底） ==== */
@@ -145,7 +161,7 @@
       Object.keys(regionMap).forEach(function(group){
         var re = regionMap[group];
         var tags = allTags.filter(function(t){ return re.test(t); });
-        // 如果该地区一个都没匹配到，就兜底放一个“默认节点”，避免 selector 为空
+        // 若该地区一个候选都没有，兜底用“默认节点”，保证 selector 非空
         if (!tags.length) tags = ["🐋 默认节点"];
         ensureSelectorHas(group, tags);
       });
@@ -155,23 +171,25 @@
       Object.keys(bizRegionPolicy).forEach(function(tag){
         var ob = byTag(tpl, tag); if (!ob || ob.type!=='selector') return;
         var outs = ensureList(ob.outbounds);
+        // 去掉会“全量展开”的聚合选择器
         outs = outs.filter(function(x){ return !antiFlatten.has(x); });
+        // 只保留 直连/默认 + 策略白名单中的地区分组
         var allow = bizRegionPolicy[tag] || [];
         outs = outs.filter(function(x){
           return (mustKeepBase.indexOf(x)>=0) || (allow.indexOf(x)>=0);
         });
-        outs = mergeUnique(mustKeepBase, outs);    // 至少包含直连/默认
+        // 兜底：至少含 直连/默认
+        outs = mergeUnique(mustKeepBase, outs);
         ob.outbounds = outs;
       });
 
-      // 最后自检与修复：剔除空串/非字符串；selector/urltest 禁止空数组
+      // 最后一轮自检与修复：剔除非字符串，selector/urltest 禁止空数组
       tpl.outbounds = tpl.outbounds.filter(function(o){ return o && o.tag; });
       tpl.outbounds.forEach(function(o){
         if (o.type==='selector' || o.type==='urltest') {
           o.outbounds = ensureList(o.outbounds).filter(function(x){ return typeof x==='string' && x; });
           if (!o.outbounds.length) {
-            // 兜底：提供一个可用目标，优先默认/直连
-            o.outbounds = ["🐋 默认节点","🔄 直连入口"];
+            o.outbounds = ["🐋 默认节点","🔄 直连入口"]; // 兜底
           }
         }
       });
